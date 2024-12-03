@@ -1,0 +1,506 @@
+---
+title: "Anàlisi de Components Principals"
+author: "Paula Solé Vallés"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(limma)
+```
+
+Abans de realitzar la integració, realitzem un Anàlisis de Components Principals per assegurar-nos que els diferents grups en que es classifiquen les nostres dades es separen.
+Per a fer-ho utilitzem els 3 blocs de dades que tenim:
+- Transcriptòmica
+- Metabolòmica
+- Paràmetres fisiològics
+
+# Obtenció de les dades
+
+```{r}
+# Set working directory
+
+setwd('/Volumes/ftp/Paula Sole')
+
+# Upload files
+transcriptomics <- read_excel("FPKM_tomate_inundacion_all.xlsx")
+metabolites_PA <- read_excel("Summary_metabolites_hormones_2019_luk&not_PA.xlsx",sheet = "Full2")
+metabolites_AR <- read_excel("Summary_metabolites_hormones_2019_luk&not_AR.xlsx",sheet = "duplicat")
+physiological <- read_excel("Summary_Physiological_parameters_lukullus_notabilis_PA_2019.xlsx", sheet = "Full3")
+
+```
+
+Separem les dades segons els grups de mostres:
+```{r}
+# Set the row names for the dataframe
+transcriptomics <- as.data.frame(transcriptomics)
+rownames(transcriptomics) <- transcriptomics$Locus
+# Remove the first column as it’s now used as row names
+transcriptomics <- transcriptomics[-1]
+
+# PA dataset
+transcriptomics_PA <- transcriptomics[, grepl("PA", colnames(transcriptomics))]
+transcriptomics_PA <- t(transcriptomics_PA)
+
+# AR dataset
+transcriptomics_AR <- transcriptomics[, grepl("AR", colnames(transcriptomics))]
+transcriptomics_AR <- t(transcriptomics_AR)
+
+# Luk dataset
+transcriptomics_Luk <- transcriptomics[, grepl("Lukullus", colnames(transcriptomics))]
+transcriptomics_Luk <- t(transcriptomics_Luk)
+
+# Not dataset
+transcriptomics_Not <- transcriptomics[, grepl("Lukullus", colnames(transcriptomics))]
+transcriptomics_Not <- t(transcriptomics_Not)
+```
+
+
+```{r}
+head(metabolites_PA)
+tail(metabolites_PA)
+
+# Delete the first row (it does not have important information)
+metabolites_PA <- metabolites_PA[-c(1),]
+
+# Delete the last rows as the information they contain is not relevant for our analysis
+metabolites_PA <- metabolites_PA[-c(117:122),]
+
+# Delete the columns that do not have relevant information
+names(metabolites_PA)
+metabolites_PA <- metabolites_PA[-c(3,4,5,6,7,17,18,28)]
+names(metabolites_PA)
+
+# Convert the tibble to a data frame
+metabolites_PA <- as.data.frame(metabolites_PA)
+# Set the row names for the dataframe
+rownames(metabolites_PA) <- metabolites_PA$...1
+# Remove the first column if it’s now used as row names
+metabolites_PA <- metabolites_PA[-1]
+# Transpose the data: samples in rows matebolits in columns
+metabolites_PA <- t(metabolites_PA)
+
+# Select only the rows with metabolite information
+# Delete the last sample to match number of samples in transcriptomics dataset
+rownames(metabolites_PA)
+metabolites_PA <- metabolites_PA[c(2,3,4,6,7,8,11,12,13,15,16,17),]
+metabolites_PA <- as.data.frame(metabolites_PA)
+
+```
+
+```{r}
+head(metabolites_AR)
+tail(metabolites_AR)
+
+# Delete the first row (it does not have important information)
+metabolites_AR <- metabolites_AR[-c(1),]
+
+# Delete the last rows as the information they contain is not relevant for our analysis
+metabolites_AR <- metabolites_AR[-c(142:147),]
+
+# Delete the columns that do not have relevant information
+names(metabolites_AR)
+metabolites_AR <- metabolites_AR[-c(3,4,5,6,7,17,18,28)]
+names(metabolites_AR)
+
+# Convert the tibble to a data frame
+metabolites_AR <- as.data.frame(metabolites_AR)
+# Set the row names for the dataframe
+rownames(metabolites_AR) <- metabolites_AR$...1
+# Remove the first column if it’s now used as row names
+metabolites_AR <- metabolites_AR[-1]
+# Transpose the data: samples in rows matebolits in columns
+metabolites_AR <- t(metabolites_AR)
+
+# Select only the rows with metabolite information
+# Delete the last sample to match number of samples in transcriptomics dataset
+rownames(metabolites_AR)
+metabolites_AR <- metabolites_AR[c(2,3,4,6,7,8,11,12,13,15,16,17),]
+metabolites_AR <- as.data.frame(metabolites_AR)
+
+```
+
+
+```{r}
+# Create the "Lukullus" dataset by selecting columns with "LUK" in their names
+metabolites_AR_Luk <- metabolites_AR[grepl("LUK", rownames(metabolites_AR)),]
+metabolites_PA_Luk <- metabolites_PA[grepl("LUK", rownames(metabolites_PA)),]
+
+common_columns <- intersect(colnames(metabolites_AR_Luk), colnames(metabolites_PA_Luk))
+metabolites_AR_Luk <- metabolites_AR_Luk[, common_columns]
+metabolites_PA_Luk <- metabolites_PA_Luk[, common_columns]
+metabolites_LUK <- rbind(metabolites_AR_Luk, metabolites_PA_Luk)
+
+
+# Create the "notabilis" dataset by selecting columns whose names start with "not"
+metabolites_AR_Not <- metabolites_AR[grepl("not", rownames(metabolites_AR)),]
+metabolites_PA_Not <- metabolites_PA[grepl("not", rownames(metabolites_PA)),]
+
+common_columns <- intersect(colnames(metabolites_AR_Not), colnames(metabolites_PA_Not))
+metabolites_AR_Not <- metabolites_AR_Not[, common_columns]
+metabolites_PA_Not <- metabolites_PA_Not[, common_columns]
+metabolites_NOT <- rbind(metabolites_AR_Not, metabolites_PA_Not)
+
+```
+
+
+
+```{r}
+# Convert the tibble to a data frame
+physiological <- as.data.frame(physiological)
+
+# Set row names using the first column
+rownames(physiological) <- physiological[[1]]
+
+# Remove the first column as it is now used as row names
+physiological <- physiological[-1]
+
+# Create the "Lukullus" dataset by selecting columns with "LUK" in their names
+physiological_LUK <- physiological[grepl("LUK", rownames(physiological)), ]
+
+# Create the "Notabilis" dataset by selecting columns with "NOT" in their names
+physiological_NOT<- physiological[grepl("NOT", rownames(physiological)),]
+```
+
+
+# PCA segons teixit
+
+## PA
+
+Creem un dataframe que contingui les dades de PA tant de Lukullus com Notabillis i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files.
+
+```{r}
+# Create a large datadrame with all the PA data
+PA_dataframe <- cbind(physiological, transcriptomics_PA, metabolites_PA)
+dim(PA_dataframe)
+```
+
+Modifiquem el dataframe de manera adequada per a realitzar el PCA.
+
+```{r}
+# Save group names
+groups_PA <- row.names(PA_dataframe)
+print(groups_PA)
+# Create uniform names for the samples
+groups_PA <- gsub(".*(LUK|NOT).*(C|S).*", "\\1_\\2", groups_PA)
+print(groups_PA)
+
+# Convert the dataframe to numeric values
+PA_dataframe <- apply(PA_dataframe, 2, as.numeric)
+row.names(PA_dataframe) <- groups_PA
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(PA_dataframe)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+PA_dataframe <- PA_dataframe[, -index_columns_NA]
+```
+
+Realitzem el PCA i visualitzem el resultat.
+
+```{r}
+# Filter the constant columns
+PA_dataframe <- PA_dataframe[, apply(PA_dataframe, 2, var) != 0]
+# Scale the data
+PA_df_scaled <- scale(PA_dataframe)
+
+# Perform the PCA
+PCA_PA <- prcomp(PA_df_scaled, center = TRUE, scale. = TRUE)
+
+# Summary of the result
+summary(PCA_PA)
+
+# Dataframe with the PCA result and the groups variable
+PCA_PA_df <- data.frame(PC1 = PCA_PA$x[,1], PC2 = PCA_PA$x[,2], Group = groups_PA)
+
+# Graphic
+ggplot(PCA_PA_df, aes(x = PC1, y = PC2, color = groups_PA)) +
+  geom_point(size = 3) +
+  labs(title = "PCA PA", x = "PC1", y = "PC2", color = "Groups")
+```
+
+Realització d'un biplot:
+
+```{r}
+scores <- as.data.frame(PCA_PA$x)
+loadings <- as.data.frame(PCA_PA$rotation)
+
+# Scale the loadings so that they are displayed correctly in the biplot
+scale_factor <- max(abs(scores$PC1), abs(scores$PC2)) / max(abs(loadings$PC1), abs(loadings$PC2))
+loadings <- loadings * scale_factor
+
+# Create the biplot with ggplot2
+ggplot() +
+  geom_point(data = scores, aes(x = PC1, y = PC2), color = "blue", size = 3) +  # Samples
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1, yend = PC2), 
+               arrow = arrow(length = unit(0., "cm")), color = "red") +  # Variables arrows
+   geom_text(data = loadings, aes(x = PC1, y = PC2, label = rownames(loadings)), 
+          color = "red", vjust = 1.5) +  # variables Labels
+  labs(title = "PA Biplot", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+## AR
+
+Creem un dataframe que contingui les dades de AR tant de Lukullus com Notabillis i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files.
+
+Les dades fisiològiques estan mesurades en PA però reflecteixen l'estat global de tota la planta, per la qual cosa també les incorporarem en aquest anàlisi.
+
+```{r}
+# Create a large datadrame with all the AR data
+AR_dataframe <- cbind(physiological, transcriptomics_AR, metabolites_AR)
+dim(AR_dataframe)
+```
+
+Modifiquem el dataframe de manera adequada per a realitzar el PCA.
+
+```{r}
+# Save group names
+groups_AR <- row.names(AR_dataframe)
+print(groups_AR)
+groups_AR <- gsub(".*(LUK|NOT).*(C|S).*", "\\1_\\2", groups_AR)
+print(groups_AR)
+
+# Convert the dataframe to numeric values
+AR_dataframe <- apply(AR_dataframe, 2, as.numeric)
+row.names(AR_dataframe) <- groups_AR
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(AR_dataframe)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+AR_dataframe <- AR_dataframe[, -index_columns_NA]
+```
+
+Realitzem el PCA i visualitzem el resultat.
+
+```{r}
+# Filter the constant columns
+AR_dataframe <- AR_dataframe[, apply(AR_dataframe, 2, var) != 0]
+# Scale the data
+AR_df_scaled <- scale(AR_dataframe)
+
+# Perform the PCA
+PCA_AR <- prcomp(AR_df_scaled, center = TRUE, scale. = TRUE)
+
+# Summary of the result
+summary(PCA_AR)
+
+# Dataframe with the PCA result and the groups variable
+PCA_AR_df <- data.frame(PC1 = PCA_AR$x[,1], PC2 = PCA_AR$x[,2], Group = groups_AR)
+
+# Crear el gráfico
+ggplot(PCA_AR_df, aes(x = PC1, y = PC2, color = Group)) +
+  geom_point(size = 3) +
+  labs(title = "PCA AR", x = "PC1", y = "PC2", color = "Groups_AR")
+```
+
+Realització d'un biplot:
+
+```{r}
+scores <- as.data.frame(PCA_AR$x)
+loadings <- as.data.frame(PCA_AR$rotation)
+
+# Scale the loadings so that they are displayed correctly in the biplot
+scale_factor <- max(abs(scores$PC1), abs(scores$PC2)) / max(abs(loadings$PC1), abs(loadings$PC2))
+loadings <- loadings * scale_factor
+
+# Create the biplot with ggplot2
+ggplot() +
+  geom_point(data = scores, aes(x = PC1, y = PC2), color = "blue", size = 3) +  # Samples
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1, yend = PC2), 
+               arrow = arrow(length = unit(0., "cm")), color = "red") +  # Variables arrows
+   geom_text(data = loadings, aes(x = PC1, y = PC2, label = rownames(loadings)), 
+          color = "red", vjust = 1.5) +  # variables Labels
+  labs(title = "AR Biplot", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+# PCA Segons genotip
+
+## *Lukullus*
+
+Creem un dataframe que contingui les dades de Lukullus tant de PA com de AR i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files.
+
+```{r}
+# Create a large datadrame with all the LUK data
+Luk_dataframe <- cbind(physiological_LUK, transcriptomics_Luk, metabolites_LUK)
+rownames(Luk_dataframe) <- rownames(transcriptomics_Luk)
+dim(Luk_dataframe)
+```
+
+Modifiquem el dataframe de manera adequada per a realitzar el PCA.
+
+```{r}
+# Save group names
+groups_LUK <- row.names(Luk_dataframe)
+print(groups_LUK)
+groups_LUK <- gsub(".*(AR|PA).*(C|S).*", "\\1_\\2", groups_LUK)
+print(groups_LUK)
+
+# Convert the dataframe to numeric values
+Luk_dataframe <- apply(Luk_dataframe, 2, as.numeric)
+row.names (Luk_dataframe) <- groups_LUK
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(Luk_dataframe)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+Luk_dataframe <- Luk_dataframe[, -index_columns_NA]
+```
+
+Realitzem el PCA i visualitzem el resultat.
+
+```{r}
+# Filter the constant columns
+Luk_dataframe <- Luk_dataframe[, apply(Luk_dataframe, 2, var) != 0]
+# Scale the data
+Luk_df_scaled <- scale(Luk_dataframe)
+
+# Perform the PCA
+PCA_LUK <- prcomp(Luk_df_scaled, center = TRUE, scale. = TRUE)
+
+# Summary of the result
+summary(PCA_LUK)
+
+# Dataframe with the PCA result and the groups variable
+PCA_LUK_df <- data.frame(PC1 = PCA_LUK$x[,1], PC2 = PCA_LUK$x[,2], Group = groups_LUK)
+
+# Crear el gráfico
+ggplot(PCA_LUK_df, aes(x = PC1, y = PC2, color = groups_LUK)) +
+  geom_point(size = 3) +
+  labs(title = "PCA LUK", x = "PC1", y = "PC2", color = "Groups")
+```
+
+Realització d'un biplot:
+
+```{r}
+scores <- as.data.frame(PCA_LUK$x)
+loadings <- as.data.frame(PCA_LUK$rotation)
+
+# Scale the loadings so that they are displayed correctly in the biplot
+scale_factor <- max(abs(scores$PC1), abs(scores$PC2)) / max(abs(loadings$PC1), abs(loadings$PC2))
+loadings <- loadings * scale_factor
+
+# Create the biplot with ggplot2
+ggplot() +
+  geom_point(data = scores, aes(x = PC1, y = PC2), color = "blue", size = 3) +  # Samples
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1, yend = PC2), 
+               arrow = arrow(length = unit(0., "cm")), color = "red") +  # Variables arrows
+   geom_text(data = loadings, aes(x = PC1, y = PC2, label = rownames(loadings)), 
+          color = "red", vjust = 1.5) +  # variables Labels
+  labs(title = "Lukullus Biplot", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+
+## *Notabilis*
+
+Creem un dataframe que contingui les dades de Notabilus tant de PA com de AR i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files.
+
+```{r}
+# Create a large datadrame with all the LUK data
+Not_dataframe <- cbind(physiological_NOT, transcriptomics_Not, metabolites_NOT)
+rownames(Not_dataframe) <- rownames(transcriptomics_Not)
+dim(Not_dataframe)
+```
+
+Modifiquem el dataframe de manera adequada per a realitzar el PCA.
+
+```{r}
+# Save group names
+groups_NOT <- row.names(Not_dataframe)
+print(groups_NOT)
+groups_NOT <- gsub(".*(AR|PA).*(C|S).*", "\\1_\\2", groups_NOT)
+print(groups_NOT)
+
+# Convert the dataframe to numeric values
+Not_dataframe <- apply(Not_dataframe, 2, as.numeric)
+row.names (Not_dataframe) <- groups_NOT
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(Not_dataframe)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+Not_dataframe <- Not_dataframe[, -index_columns_NA]
+```
+
+Realitzem el PCA i visualitzem el resultat.
+
+```{r}
+# Filter the constant columns
+Not_dataframe <- Not_dataframe[, apply(Not_dataframe, 2, var) != 0]
+# Scale the data
+Not_df_scaled <- scale(Not_dataframe)
+
+# Perform the PCA
+PCA_NOT <- prcomp(Not_df_scaled, center = TRUE, scale. = TRUE)
+
+# Summary of the result
+summary(PCA_NOT)
+
+# Dataframe with the PCA result and the groups variable
+PCA_NOT_df <- data.frame(PC1 = PCA_NOT$x[,1], PC2 = PCA_NOT$x[,2], Group = groups_NOT)
+
+# Crear el gráfico
+ggplot(PCA_NOT_df, aes(x = PC1, y = PC2, color = groups_NOT)) +
+  geom_point(size = 3) +
+  labs(title = "PCA NOT", x = "PC1", y = "PC2", color = "Groups")
+```
+
+Realització d'un biplot:
+
+```{r}
+scores <- as.data.frame(PCA_LUK$x)
+loadings <- as.data.frame(PCA_LUK$rotation)
+
+# Scale the loadings so that they are displayed correctly in the biplot
+scale_factor <- max(abs(scores$PC1), abs(scores$PC2)) / max(abs(loadings$PC1), abs(loadings$PC2))
+loadings <- loadings * scale_factor
+
+# Create the biplot with ggplot2
+ggplot() +
+  geom_point(data = scores, aes(x = PC1, y = PC2), color = "blue", size = 3) +  # Samples
+  geom_segment(data = loadings, aes(x = 0, y = 0, xend = PC1, yend = PC2), 
+               arrow = arrow(length = unit(0., "cm")), color = "red") +  # Variables arrows
+   geom_text(data = loadings, aes(x = PC1, y = PC2, label = rownames(loadings)), 
+          color = "red", vjust = 1.5) +  # variables Labels
+  labs(title = "Notabilis Biplot", x = "PC1", y = "PC2") +
+  theme_minimal()
+```
+# Exportació dels resultats
+
+Guardem els gràfics en format png:
+```{r}
+library(gridExtra)
+
+png(file="~/Desktop/PCA/PCA1_plots.png", width=600, height=350)
+
+par(mfrow=c(2,2))
+
+plot1<- ggplot(PCA_PA_df, aes(x = PC1, y = PC2, color = groups_PA)) +
+  geom_point(size = 3) +
+  labs(title = "PCA PA", x = "PC1", y = "PC2", color = "Groups")
+
+plot2 <- ggplot(PCA_AR_df, aes(x = PC1, y = PC2, color = groups_AR)) +
+  geom_point(size = 3) +
+  labs(title = "PCA AR", x = "PC1", y = "PC2", color = "Groups")
+
+plot3 <- ggplot(PCA_LUK_df, aes(x = PC1, y = PC2, color = groups_LUK)) +
+  geom_point(size = 3) +
+  labs(title = "PCA LUK", x = "PC1", y = "PC2", color = "Groups")
+
+plot4 <- ggplot(PCA_NOT_df, aes(x = PC1, y = PC2, color = groups_NOT)) +
+  geom_point(size = 3) +
+  labs(title = "PCA NOT", x = "PC1", y = "PC2", color = "Groups")
+
+grid.arrange(plot1, plot2, plot3, plot4, ncol = 2, nrow = 2)
+
+dev.off()
+
+```
+
+
+

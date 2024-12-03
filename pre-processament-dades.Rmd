@@ -1,0 +1,690 @@
+---
+title: "Pre-processament de les dades"
+author: "Paula Solé Vallés"
+date: "`r Sys.Date()`"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '~/Users/paula/Desktop/Pre-processament')
+```
+```{r message=FALSE, warning=FALSE}
+# Load packages
+library(tidyverse)
+library(readxl)
+library(limma)
+library(DESeq2)
+library(readr)
+```
+
+En aquest informe, realitzarem el pre-processament les dades de 3 tipus d'anàlisis:
+
+-   Paràmetres fisiològics
+
+-   Dades transcriptòmiques
+
+-   Dades metabolòmiques
+
+Que es classifiquen en:
+
+-   2 teixits: PA o AR
+
+-   2 genotips: Lukullus o notabilis
+
+-   2 condicions: control o estrés
+
+L'objetiu d'aquest pre-processament és preparar i classificar les dades per poder-les utilitzar el anàlisis posteriors.
+
+Els passos a seguir en cada tipus de dades serà el següent:
+
+**Transcriptòmica**
+
+1.  Filtratge de gens amb baixa expressió
+2.  Filtratge de gens diferencialment expressats
+3.  Separació en diferents conjunts de dades per teixit i per genotip
+
+**Metabolòmica**
+
+1.  Filtratge de metabòlits significatius
+2.  Selecció de les 3 rèpliques amb menys desviació
+3.  Separació en diferents conjunts de dades per teixit i per genotip
+
+**Paràmetres fisiològics**
+
+1.  Separació en diferents conjunts de dades per teixit i per genotip
+
+# Obtenció de les dades
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+# Set working directory
+setwd('/Volumes/ftp/Paula Sole')
+
+# Upload files
+transcriptomics <- read_excel("FPKM_tomate_inundacion_all.xlsx")
+physiological <- read_excel("Summary_Physiological_parameters_lukullus_notabilis_PA_2019.xlsx", sheet = "Full3")
+metabolites_PA <- read_excel("Summary_metabolites_hormones_2019_luk&not_PA.xlsx",sheet = "Full2")
+metabolites_AR <- read_excel("Summary_metabolites_hormones_2019_luk&not_AR.xlsx",
+                             sheet = "duplicat")
+```
+
+# Transcriptòmica
+
+```{r}
+# Dataset exploration
+dim(transcriptomics)
+names(transcriptomics)
+summary(transcriptomics)
+```
+
+```{r}
+# Set the row names for the dataframe
+transcriptomics <- as.data.frame(transcriptomics)
+rownames(transcriptomics) <- transcriptomics$Locus
+# Remove the first column as it’s now used as row names
+transcriptomics <- transcriptomics[-1]
+```
+
+## Filtratge de gens amb baixa expressió
+
+És necessari eliminar els gens que no s'expressen en cap mostra o que s'expressen en nivells molt baixos. Per defecte, un gen ha de tenir més de 0,5 recomptes per milió (CPM) en almenys 2 mostres. En cas contrari, s'elimina el gen.
+
+Els CPM es calculen normalitzant els recomptes de lectura pel recompte total per mostra. .
+
+Per a realitzar el filtratge de gens amb baixa expressió, utilitzem l'eina bioinformàtica iDEP 2.0, que utilitza el següent fragment de codi:
+
+```         
+x <- x[ which( apply( cpm(DGEList(counts = x)),  1, function(y) sum(y>=minCPM)) >=  nLibraries ) , ]
+```
+
+Les dades es normalitzen mitjançant la funció cpm a edgeR. Es compta el nombre de mostres per sobre d'un minCPM (en el nostre cas minCPM=0,5) i només es conserven gens amb nivells per sobre de minCPM en almenys nLibraries (en el nostre cas nLibraries=2).
+
+Carreguem l'arxiu resultant de la següent manera:
+
+```{r}
+Transcriptomica_filtr <- read.csv("~/Desktop/Pre-processament/processed_data.csv")
+```
+
+## Filtratge de gens diferencialment expressats
+
+```{r}
+converted_counts <- read.csv("/Volumes/ftp/Paula Sole/converted_counts_data.csv")
+```
+
+### Expressió diferencial per a PA vs AR
+
+```{r}
+# Set parameters
+FC <- 2 # Fold-change cutoff
+FDR <- 0.1 # FDR cutoff
+alpha <- 0.1 # independent filtering, default
+
+#  Prepare data --------------------
+# Use the "Converted counts" button in the Pre-Process tab
+# to download the filtered counts file with gene IDs converted to Ensembl.
+raw_counts = converted_counts
+row.names(raw_counts) <- raw_counts$User_ID
+raw_counts <- raw_counts[, -(1:3)] # delete 3 columns of IDs
+str(raw_counts)
+
+# Factors coded: 1 --> A, 2 --> B, 3 --> C
+col_data <- data.frame(
+  "A" = c("LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "LUKULLUS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS", "NOTABILIS"),
+  "B" = c("AR", "AR", "AR", "AR", "AR", "AR", "AR", "AR", "AR", "AR", "AR", "AR", "PA", "PA", "PA", "PA", "PA", "PA", "PA", "PA", "PA", "PA", "PA", "PA"),
+  "C" = c("CONTROL", "CONTROL", "CONTROL", "STRESS", "STRESS", "STRESS", "CONTROL", "CONTROL", "CONTROL", "STRESS", "STRESS", "STRESS", "CONTROL", "CONTROL", "CONTROL", "STRESS", "STRESS", "STRESS", "CONTROL", "CONTROL", "CONTROL", "STRESS", "STRESS", "STRESS")
+)
+row.names(col_data) <- colnames(raw_counts)
+col_data
+
+#Set reference level 
+col_data[, 2] <- as.factor(col_data[, 2])
+col_data[, 2] <- relevel(col_data[, 2], "PA")
+col_data[, 2] <- as.factor(col_data[, 2])
+col_data[, 2] <- relevel(col_data[, 2], "AR")
+
+# Run DESeq2--------------------
+dds <- DESeq2::DESeqDataSetFromMatrix(
+   countData = raw_counts,
+   colData = col_data,
+   design = ~  B 
+)
+dds = DESeq2::DESeq(dds) 
+
+# Extract results--------------------
+
+# Comparison 1 of 1:  PA-AR
+res <- DESeq2::results(dds,
+  contrast = c("B", "PA", "AR"),
+  independentFiltering = TRUE,
+  alpha = alpha
+)
+# Examine results 
+summary(res)
+plotMA(res)
+plotCounts(dds, gene = which.min(res$padj), intgroup = colnames(col_data)[2])
+res <- subset(res, padj < FDR & abs(log2FoldChange) > log2(FC)) # Select
+table(sign(res$log2FoldChange)) # N. of genes Down, Up
+res <- res[order(-res$log2FoldChange), ] #sort
+head(res) #top upregulated
+tail(res) #top downregulated
+
+```
+
+### Expressió diferencial per a Lukullus vs Notabilis
+
+```{r}
+#Set reference level 
+col_data[, 1] <- as.factor(col_data[, 1])
+col_data[, 1] <- relevel(col_data[, 1], "LUKULLUS")
+
+# Run DESeq2--------------------
+dds2 <- DESeq2::DESeqDataSetFromMatrix(
+   countData = raw_counts,
+   colData = col_data,
+   design = ~  A 
+)
+dds2 = DESeq2::DESeq(dds2) 
+
+# Extract results--------------------
+
+# Comparison 1 of 1:  LUKULLUS-NOTABILIS
+res2 <- DESeq2::results(dds2,
+  contrast = c("A", "LUKULLUS", "NOTABILIS"),
+  independentFiltering = TRUE,
+  alpha = alpha
+)
+# Examine results 
+summary(res2)
+plotMA(res2)
+plotCounts(dds2, gene = which.min(res2$padj), intgroup = colnames(col_data)[1])
+res2 <- subset(res2, padj < FDR & abs(log2FoldChange) > log2(FC)) # Select
+table(sign(res2$log2FoldChange)) # N. of genes Down, Up
+res2 <- res2[order(-res2$log2FoldChange), ] #sort
+head(res2) #top upregulated
+tail(res2) #top downregulated
+
+```
+
+A partir de les llistes de gens diferencialment expressats (tant per teixit com per genotip), creem 2 subsets de les dades ja pre-processades:
+
+```{r}
+row.names(Transcriptomica_filtr) <- Transcriptomica_filtr$User_ID
+Transcriptomica_filtr <- Transcriptomica_filtr[, -(1:3)]
+
+# Tisseu subset
+diff_expr_genes <- rownames(subset(res, padj < FDR & abs(log2FoldChange) > log2(FC)))
+DEG_PAvsAR <- Transcriptomica_filtr[diff_expr_genes, ]
+
+# Genotype subset 
+diff_expr_genes <- rownames(subset(res2, padj < FDR & abs(log2FoldChange) > log2(FC)))
+DEG_LUKvsNOT <- Transcriptomica_filtr[diff_expr_genes, ]
+```
+
+Estandaritzem els noms de les mostres:
+
+```{r}
+# Standarize sample names
+colnames(DEG_PAvsAR)
+colnames(DEG_PAvsAR) <- gsub("Lukullus", "LUK", colnames(DEG_PAvsAR))
+colnames(DEG_PAvsAR) <- gsub("notabilis", "NOT", colnames(DEG_PAvsAR))
+colnames(DEG_PAvsAR) <- make.unique(gsub(".*(LUK|NOT).*(AR|PA).*(C|S).*", "\\1_\\3_\\2", colnames(DEG_PAvsAR)))
+colnames(DEG_PAvsAR)
+
+colnames(DEG_LUKvsNOT)
+colnames(DEG_LUKvsNOT) <- gsub("Lukullus", "LUK", colnames(DEG_LUKvsNOT))
+colnames(DEG_LUKvsNOT) <- gsub("notabilis", "NOT", colnames(DEG_LUKvsNOT))
+colnames(DEG_LUKvsNOT) <- make.unique(gsub(".*(LUK|NOT).*(AR|PA).*(C|S).*", "\\1_\\3_\\2", colnames(DEG_LUKvsNOT)))
+colnames(DEG_LUKvsNOT)
+```
+
+Exportem els resultat en arxius de text:
+
+```{r}
+write.table(DEG_PAvsAR, "/Volumes/ftp/Paula Sole/processed_data/DEG_PAvsAR.txt", sep="\t")
+write.table(DEG_LUKvsNOT, "/Volumes/ftp/Paula Sole/processed_data/DEG_LUKvsNOT.txt", sep="\t")
+
+transcriptomics_PA <- DEG_PAvsAR[, grepl("PA", colnames(DEG_PAvsAR))]
+transcriptomics_PA <- t(transcriptomics_PA)
+write.table(transcriptomics_PA, "/Volumes/ftp/Paula Sole/processed_data/transcriptomics_PA.txt", sep="\t")
+
+transcriptomics_AR <- DEG_PAvsAR[, grepl("AR", colnames(DEG_PAvsAR))]
+transcriptomics_AR <- t(transcriptomics_AR)
+write.table(transcriptomics_AR, "/Volumes/ftp/Paula Sole/processed_data/transcriptomics_AR.txt", sep="\t")
+
+transcriptomics_Luk <- DEG_LUKvsNOT[, grepl("LUK", colnames(DEG_LUKvsNOT))]
+transcriptomics_Luk <- t(transcriptomics_Luk)
+write.table(transcriptomics_Luk, "/Volumes/ftp/Paula Sole/processed_data/transcriptomics_Luk.txt", sep="\t")
+
+transcriptomics_Not <- DEG_LUKvsNOT[, grepl("NOT", colnames(DEG_LUKvsNOT))]
+transcriptomics_Not <- t(transcriptomics_Not)
+write.table(transcriptomics_Not, "/Volumes/ftp/Paula Sole/processed_data/transcriptomics_Not.txt", sep="\t")
+
+```
+
+# Metabolòmica
+
+Modifiquem els dataframes per adaptar-los a les nostres necessitats:
+
+```{r}
+head(metabolites_AR)
+tail(metabolites_AR)
+
+# Delete the first row (it does not have important information)
+metabolites_AR <- metabolites_AR[-c(1),]
+
+# Delete the last rows as the information they contain is not relevant for our analysis
+metabolites_AR <- metabolites_AR[-c(142:147),]
+
+# Delete the columns that do not have relevant information
+names(metabolites_AR)
+metabolites_AR <- metabolites_AR[-c(3,4,5,6,7,17,18,28)]
+names(metabolites_AR)
+
+# Convert the tibble to a data frame
+metabolites_AR <- as.data.frame(metabolites_AR)
+# Set the row names for the dataframe
+rownames(metabolites_AR) <- metabolites_AR$...1
+# Remove the first column if it’s now used as row names
+metabolites_AR <- metabolites_AR[-1]
+
+# Standarize sample names
+colnames(metabolites_AR)
+colnames(metabolites_AR) <- make.unique(gsub(".*(LUK|not).*(C|S).*", "\\1_\\2_AR", colnames(metabolites_AR)))
+rownames(metabolites_AR)
+```
+
+```{r}
+head(metabolites_PA)
+tail(metabolites_PA)
+
+# Delete the first row (it does not have important information)
+metabolites_PA <- metabolites_PA[-c(1),]
+
+# Delete the last rows as the information they contain is not relevant for our analysis
+metabolites_PA <- metabolites_PA[-c(117:122),]
+
+# Delete the columns that do not have relevant information
+names(metabolites_PA)
+metabolites_PA <- metabolites_PA[-c(3,4,5,6,7,17,18,28)]
+names(metabolites_PA)
+
+# Convert the tibble to a data frame
+metabolites_PA <- as.data.frame(metabolites_PA)
+# Set the row names for the dataframe
+rownames(metabolites_PA) <- metabolites_PA$...1
+# Remove the first column if it’s now used as row names
+metabolites_PA <- metabolites_PA[-1]
+
+# Standarize sample names
+colnames(metabolites_PA)
+colnames(metabolites_PA) <- make.unique(gsub(".*(LUK|not).*(C|S).*", "\\1_\\2_PA", colnames(metabolites_PA)))
+rownames(metabolites_PA)
+```
+
+Separem els datasets per Lukullum i notabilis
+
+```{r}
+# Create the "Lukullus" dataset by selecting columns with "LUK" in their names
+metabolites_AR_Luk <- metabolites_AR %>%
+  select(1, 10, matches("LUK"))
+
+# Create the "notabilis" dataset by selecting columns whose names start with "not"
+metabolites_AR_Not <- metabolites_AR %>%
+  select(1, 19, matches("^not"))
+
+names(metabolites_AR_Luk)
+names(metabolites_AR_Not)
+```
+
+```{r}
+# Create the "Lukullus" dataset by selecting columns with "LUK" in their names
+metabolites_PA_Luk <- metabolites_PA %>%
+  select(1, 10, matches("LUK"))
+
+# Create the "notabilis" dataset by selecting columns whose names start with "not"
+metabolites_PA_Not <- metabolites_PA %>%
+  select(1, 19, matches("^not"))
+
+names(metabolites_PA_Luk)
+names(metabolites_PA_Not)
+```
+
+## Filtratge dels metabòlits significatius
+
+Eliminem les variables no significatives (p-valor \> 0,05)
+
+```{r}
+dim(metabolites_AR_Luk)
+dim(metabolites_AR_Not)
+
+# Ensure the PVALUE column is numeric
+metabolites_AR_Luk <- metabolites_AR_Luk %>%
+  mutate(`PVALUE...16` = as.numeric(`PVALUE...16`))
+metabolites_AR_Not <- metabolites_AR_Not %>%
+  mutate(`PVALUE...27` = as.numeric(`PVALUE...27`))
+
+# Filtrate the significative metabolites
+metabolites_AR_Luk_filtr <- subset(metabolites_AR_Luk, PVALUE...16 < 0.05)
+metabolites_AR_Not_filtr <- subset(metabolites_AR_Not, PVALUE...27 < 0.05)
+
+# Check the dimension of the new dataset
+dim(metabolites_AR_Luk_filtr)
+dim(metabolites_AR_Not_filtr)
+```
+
+```{r}
+dim(metabolites_PA_Luk)
+dim(metabolites_PA_Not)
+
+# Ensure the PVALUE column is numeric
+metabolites_PA_Luk <- metabolites_PA_Luk %>%
+  mutate(`PVALUE...16` = as.numeric(`PVALUE...16`))
+metabolites_PA_Not <- metabolites_PA_Not %>%
+  mutate(`PVALUE...27` = as.numeric(`PVALUE...27`))
+
+# Filtrate the significative metabolites
+metabolites_PA_Luk_filtr <- subset(metabolites_PA_Luk, PVALUE...16 < 0.05)
+metabolites_PA_Not_filtr <- subset(metabolites_PA_Not, PVALUE...27 < 0.05)
+
+# Check the dimension of the new dataset
+dim(metabolites_PA_Luk_filtr)
+dim(metabolites_PA_Not_filtr)
+```
+
+## Selecció de rèpliques
+
+Com que de cada mostra (LUKCT, LUKST, notCT i notST) tenim 4 rèpliques però de transcriptòmica en tenim 3, realitzem una anàlisi de dispersió per seleccionar les 3 rèpliques que s'assemblin més i eliminar les que es desvien més de la mitjana.
+
+Per fer-ho:
+
+1.  Calculem la mitjana de cada mostra.
+
+2.  Calculem la Desviació Absoluta de cada valor respecte a la mitjana (ens donarà una mesura de com de lluny està cada valor de la mitjana)
+
+3.  Ordenem els valors per desviació absoluta de menor a major.
+
+4.  Seleccionem les 3 columnes amb menor desviació.
+
+```{r}
+# Create a function to select the 2 columns with less desviation
+select_best_replicates <- function(data) {
+  # Convert the columns to numeric
+  data_numeric <- apply(data, 2, function(x) as.numeric(as.character(x)))
+  
+  # Calculate the mean of each column
+  means <- colMeans(data_numeric, na.rm = TRUE)
+  
+  # Calculate the absolute deviation of each value from the mean
+  abs_deviations <- abs(sweep(data_numeric, 2, means, "-"))
+
+  # Sort the columns by the sum of absolute desviations
+  order_cols <- order(colSums(abs_deviations, na.rm = TRUE))
+  
+  # Select the 3 first columns and the 2 first columns of the original dataframe
+  data_selected <- data[, order_cols[1:3]]
+  
+  # Return the selected data
+  return(data_selected)
+}
+
+# Apply the function to each dataframe, including the columns with the metabolites names
+LUKCT_selected <- cbind(metabolites_PA_Luk_filtr[, 1:2], 
+                        select_best_replicates(metabolites_PA_Luk_filtr[, grepl("LUK_C", colnames(metabolites_PA_Luk_filtr))]))
+LUKST_selected <- select_best_replicates(metabolites_PA_Luk_filtr[, grepl("LUK_S", colnames(metabolites_PA_Luk_filtr))])
+
+notCT_selected <- cbind(metabolites_PA_Not_filtr[, 1:2], 
+                        select_best_replicates(metabolites_PA_Not_filtr[, grepl("not_C", colnames(metabolites_PA_Not_filtr))]))
+notST_selected <- select_best_replicates(metabolites_PA_Not_filtr[, grepl("not_S", colnames(metabolites_PA_Not_filtr))])
+
+# Combine the results
+met_PA_Luk_final <- cbind(LUKCT_selected, LUKST_selected)
+met_PA_Not_final <- cbind(notCT_selected, notST_selected)
+
+# Convert to numeric values
+met_PA_Luk_final <- mutate_all(met_PA_Luk_final, function(x) as.numeric(as.character(x)))
+met_PA_Not_final <- mutate_all(met_PA_Not_final, function(x) as.numeric(as.character(x)))
+
+# Repeat the process for AR
+LUKCT_selected <- cbind(metabolites_AR_Luk_filtr[, 1:2], 
+                        select_best_replicates(metabolites_AR_Luk_filtr[, grepl("LUK_C", colnames(metabolites_AR_Luk_filtr))]))
+LUKST_selected <- select_best_replicates(metabolites_AR_Luk_filtr[, grepl("LUK_S", colnames(metabolites_AR_Luk_filtr))])
+
+notCT_selected <- cbind(metabolites_AR_Not_filtr[, 1:2], 
+                        select_best_replicates(metabolites_AR_Not_filtr[, grepl("not_C", colnames(metabolites_AR_Not_filtr))]))
+notST_selected <- select_best_replicates(metabolites_AR_Not_filtr[, grepl("not_S", colnames(metabolites_AR_Not_filtr))])
+
+# Combine the results
+met_AR_Luk_final <- cbind(LUKCT_selected, LUKST_selected)
+met_AR_Not_final <- cbind(notCT_selected, notST_selected)
+
+# Convert to numeric values
+met_AR_Luk_final <- mutate_all(met_AR_Luk_final, function(x) as.numeric(as.character(x)))
+met_AR_Not_final <- mutate_all(met_AR_Not_final, function(x) as.numeric(as.character(x)))
+```
+
+Exportem els resultat en arxius de text:
+
+```{r}
+# Transpose the metabolomics datadrames and delete the first 2 rows
+met_PA_Luk_t <- t(met_PA_Luk_final)
+met_PA_Luk_t <- met_PA_Luk_t[-c(1:2),]
+
+met_PA_Not_t <- t(met_PA_Not_final)
+met_PA_Not_t <- met_PA_Not_t[-c(1:2),]
+
+# Combine datasets identifing common columns and creating new datasets with them
+common_columns <- intersect(colnames(met_PA_Luk_t), colnames(met_PA_Not_t))
+met_PA_Luk_t <- met_PA_Luk_t[, common_columns]
+met_PA_Not_t <- met_PA_Not_t[, common_columns]
+met_PA <- rbind(met_PA_Luk_t, met_PA_Not_t)
+
+write.table(met_PA, "/Volumes/ftp/Paula Sole/processed_data/metabolites_PA.txt", sep="\t")
+
+# Transpose the metabolomics dataframes and delete the first 2 rows
+met_AR_Luk_t <- t(met_AR_Luk_final)
+met_AR_Luk_t <- met_AR_Luk_t[-c(1:2),]
+met_AR_Not_t <- t(met_AR_Not_final)
+met_AR_Not_t <- met_AR_Not_t[-c(1:2),]
+
+# Combine datasets identifing common columns and creating new datasets with them
+common_columns <- intersect(colnames(met_AR_Luk_t), colnames(met_AR_Not_t))
+met_AR_Luk_t <- met_AR_Luk_t[, common_columns]
+met_AR_Not_t <- met_AR_Not_t[, common_columns]
+met_AR <- rbind(met_AR_Luk_t, met_AR_Not_t)
+
+write.table(met_AR, "/Volumes/ftp/Paula Sole/processed_data/metabolites_AR.txt", sep="\t")
+
+# Transpose the metabolomics datadrames and delete the first 2 rows
+met_AR_Luk_t <- t(met_AR_Luk_final)
+met_AR_Luk_t <- met_AR_Luk_t[-c(1:2),]
+met_PA_Luk_t <- t(met_PA_Luk_final)
+met_PA_Luk_t <- met_PA_Luk_t[-c(1:2),]
+
+# Combine datasets identifing common columns and creating new datasets with them
+common_columns <- intersect(colnames(met_PA_Luk_t), colnames(met_AR_Luk_t))
+met_PA_Luk_t <- met_PA_Luk_t[, common_columns]
+met_AR_Luk_t <- met_AR_Luk_t[, common_columns]
+met_LUK <- rbind(met_AR_Luk_t, met_PA_Luk_t)
+
+write.table(met_LUK, "/Volumes/ftp/Paula Sole/processed_data/metabolites_LUK.txt", sep="\t", row.names=FALSE)
+
+# Transpose the metabolomics datadrames and delete the first 2 rows
+met_AR_Not_t <- t(met_AR_Not_final)
+met_AR_Not_t <- met_AR_Not_t[-c(1:2),]
+met_PA_Not_t <- t(met_PA_Not_final)
+met_PA_Not_t <- met_PA_Not_t[-c(1:2),]
+
+# Combine datasets identifing common columns and creating new datasets with them
+common_columns <- intersect(colnames(met_PA_Not_t), colnames(met_AR_Not_t))
+met_PA_Not_t <- met_PA_Not_t[, common_columns]
+met_AR_Not_t <- met_AR_Not_t[, common_columns]
+met_NOT <- rbind(met_AR_Not_t, met_PA_Not_t)
+
+write.table(met_NOT, "/Volumes/ftp/Paula Sole/processed_data/metabolites_NOT.txt", sep="\t", row.names=FALSE)
+
+```
+
+# Dades fisiològiques
+
+Adaptem el dataframe per poder treballar amb ell de manera adequada:
+
+```{r}
+# Convert the tibble to a data frame
+physiological <- as.data.frame(physiological)
+
+# Set row names using the first column
+rownames(physiological) <- physiological[[1]]
+
+# Remove the first column as it is now used as row names
+physiological <- physiological[-1]
+
+# Standarize sample names
+row.names(physiological)
+row.names(physiological) <- make.unique(gsub(".*(LUK|NOT).*(C|S).*", "\\1_\\2_PA", row.names(physiological)))
+rownames(physiological)
+```
+
+Creem un dataset separat per a cada genotip: un amb les dades de Lukullus i un amb les dades de Notabilis:
+
+```{r}
+# Create the "Lukullus" dataset by selecting columns with "LUK" in their names
+physiological_LUK <- physiological[grepl("LUK", rownames(physiological)), ]
+
+# Create the "Notabilis" dataset by selecting columns with "NOT" in their names
+physiological_NOT<- physiological[grepl("NOT", rownames(physiological)),]
+
+# Optionally check the dimensions and columns of the new datasets
+dim(physiological_LUK)  
+dim(physiological_NOT)  
+rownames(physiological_LUK)  
+rownames(physiological_NOT) 
+```
+
+Exportem els resultat en arxius de text:
+
+```{r}
+write.table(physiological_LUK, "/Volumes/ftp/Paula Sole/processed_data/physiological_LUK.txt", sep="\t")
+
+write.table(physiological_NOT, "/Volumes/ftp/Paula Sole/processed_data/physiological_NOT.txt", sep="\t")
+
+```
+
+# Conjunts de dades per grups
+
+Creem un dataframe que contingui les dades de PA tant de Lukullus com Notabillis i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files. Seguim el mateix procediment per la resta de grups, de manera que obtenim 2 dataframes per teixit (PA i AR) i 2 dataframes per genotip (Lukullus i notabilis).
+
+```{r}
+PA_dataframe <- cbind(physiological, transcriptomics_PA, met_PA)
+write.table(physiological_NOT, "/Volumes/ftp/Paula Sole/processed_data/PA_dataframe.txt", sep="\t")
+
+AR_dataframe <- cbind(physiological, transcriptomics_AR, met_AR)
+rownames(AR_dataframe) <- rownames(transcriptomics_AR)
+write.table(AR_dataframe, "/Volumes/ftp/Paula Sole/processed_data/AR_dataframe.txt", sep="\t")
+
+Luk_dataframe <- cbind(physiological_LUK, transcriptomics_Luk, met_LUK)
+rownames(Luk_dataframe) <- rownames(transcriptomics_Luk)
+write.table(Luk_dataframe, "/Volumes/ftp/Paula Sole/processed_data/Luk_dataframe.txt", sep="\t")
+
+Not_dataframe <- cbind(physiological_NOT, transcriptomics_Not, met_NOT)
+rownames(Not_dataframe) <- rownames(transcriptomics_Not)
+write.table(Not_dataframe, "/Volumes/ftp/Paula Sole/processed_data/Not_dataframe.txt", sep="\t")
+
+```
+
+# Normalització de les dades
+
+Visualitzem la distribució de les dades entre les diferents mostres mitjançant boxplots:
+
+```{r}
+plot_boxplot <- function(data, title) {
+  melted_data <- reshape2::melt(as.data.frame(data))
+  
+  y_min <- min(data, na.rm = TRUE) - (0.05 * abs(min(data, na.rm = TRUE)))
+  y_max <- max(data, na.rm = TRUE) + (0.05 * abs(max(data, na.rm = TRUE)))
+  
+  ggplot(melted_data, aes(x = variable, y = value)) +
+    geom_boxplot() + labs(title = title) + 
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+    scale_y_continuous(limits = c(y_min, y_max), expand = c(0, 0))
+}
+
+par(mfrow = c(2, 2))
+
+plot_boxplot(t(PA_dataframe), "Boxplot - PA data")
+plot_boxplot(t(AR_dataframe), "Boxplot - AR data")
+plot_boxplot(t(Luk_dataframe), "Boxplot - Luk data")
+plot_boxplot(t(Not_dataframe), "Boxplot - Not data")
+
+```
+
+Implementem diferents mètodes i realitzem boxplots per veure com es distribueixen les dades normalitzades.
+
+```{r}
+# Min-Max Scaling
+minMax <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+PA_minmax <- as.data.frame(lapply(PA_dataframe, minMax))
+
+# Z-score normalization
+PA_zscore <- scale(PA_dataframe)
+
+# Log normalization
+PA_log <- log(PA_dataframe)
+
+# Quantile Normalization (from limma)
+PA_quantile <- normalizeQuantiles(PA_dataframe)
+
+plot_boxplot(t(PA_minmax), "Boxplot - Min-Max Scaling")
+plot_boxplot(t(PA_zscore), "Boxplot - Z-score Normalization")
+plot_boxplot(t(PA_log), "Boxplot - Log Normalization")
+plot_boxplot(t(PA_quantile), "Boxplot - Quantile Normalization")
+
+summary(t(PA_minmax))
+summary(t(PA_zscore))
+summary(t(PA_log))
+summary(t(PA_quantile))
+```
+
+Seguim els mateixos passos de normalització per les dades de AR.
+
+```{r}
+# Min-Max Scaling
+minMax <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+AR_minmax <- as.data.frame(lapply(AR_dataframe, minMax))
+
+# Z-score normalization
+# z_score_normalization <- function(x) {return ((x - mean(x)) / sd(x))}
+AR_zscore <- scale(AR_dataframe)
+
+# Log normalization
+AR_log <- log(AR_dataframe)
+
+# Quantile Normalization (from limma)
+AR_quantile <- normalizeQuantiles(AR_dataframe)
+
+plot_boxplot(t(AR_minmax), "Boxplot - Min-Max Scaling")
+plot_boxplot(t(AR_zscore), "Boxplot - Z-score Normalization")
+plot_boxplot(t(AR_log), "Boxplot - Log Normalization")
+plot_boxplot(t(AR_quantile), "Boxplot - Quantile Normalization")
+
+summary(t(AR_minmax))
+summary(t(AR_zscore))
+summary(t(AR_log))
+summary(t(AR_quantile))
+```
+
+Guardem les dades normalitzades:
+
+```{r}
+write.table(PA_log, "/Volumes/ftp/Paula Sole/processed_data/PA_dataframe_log.txt", sep="\t")
+write.table(PA_quantile, "/Volumes/ftp/Paula Sole/processed_data/PA_dataframe_quantile.txt", sep="\t")
+
+write.table(AR_log, "/Volumes/ftp/Paula Sole/processed_data/AR_dataframe_log.txt", sep="\t")
+write.table(AR_quantile, "/Volumes/ftp/Paula Sole/processed_data/AR_dataframe_quantile.txt", sep="\t")
+```
