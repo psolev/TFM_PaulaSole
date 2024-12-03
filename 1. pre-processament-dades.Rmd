@@ -18,7 +18,7 @@ library(DESeq2)
 library(readr)
 ```
 
-En aquest informe, realitzarem el pre-processament les dades de 3 tipus d'anàlisis:
+En aquest informe, es realitzarà el pre-processament de les dades de 3 tipus d'anàlisi:
 
 -   Paràmetres fisiològics
 
@@ -26,7 +26,7 @@ En aquest informe, realitzarem el pre-processament les dades de 3 tipus d'anàli
 
 -   Dades metabolòmiques
 
-Que es classifiquen en:
+Partim de 24 mostres que es classifiquen en:
 
 -   2 teixits: PA o AR
 
@@ -34,7 +34,7 @@ Que es classifiquen en:
 
 -   2 condicions: control o estrés
 
-L'objetiu d'aquest pre-processament és preparar i classificar les dades per poder-les utilitzar el anàlisis posteriors.
+L'objetiu d'aquest pre-processament és preparar i classificar les dades per poder-les utilitzar en anàlisis posteriors.
 
 Els passos a seguir en cada tipus de dades serà el següent:
 
@@ -68,7 +68,7 @@ metabolites_AR <- read_excel("Summary_metabolites_hormones_2019_luk&not_AR.xlsx"
                              sheet = "duplicat")
 ```
 
-# Transcriptòmica
+# Dades Transcriptòmiques
 
 ```{r}
 # Dataset exploration
@@ -91,15 +91,15 @@ transcriptomics <- transcriptomics[-1]
 
 Els CPM es calculen normalitzant els recomptes de lectura pel recompte total per mostra. .
 
-Per a realitzar el filtratge de gens amb baixa expressió, utilitzem l'eina bioinformàtica iDEP 2.0, que utilitza el següent fragment de codi:
+Per a realitzar el filtratge de gens amb baixa expressió, s'empra l'eina bioinformàtica iDEP 2.0, que utilitza el següent fragment de codi:
 
 ```         
 x <- x[ which( apply( cpm(DGEList(counts = x)),  1, function(y) sum(y>=minCPM)) >=  nLibraries ) , ]
 ```
 
-Les dades es normalitzen mitjançant la funció cpm a edgeR. Es compta el nombre de mostres per sobre d'un minCPM (en el nostre cas minCPM=0,5) i només es conserven gens amb nivells per sobre de minCPM en almenys nLibraries (en el nostre cas nLibraries=2).
+Les dades es normalitzen mitjançant la funció cpm a edgeR. Es compta el nombre de mostres per sobre d'un minCPM (establert en minCPM=0,5) i només es conserven gens amb nivells per sobre de minCPM en almenys nLibraries (establert en nLibraries=2).
 
-Carreguem l'arxiu resultant de la següent manera:
+Es carrega l'arxiu resultant a l'entorn R de la següent manera:
 
 ```{r}
 Transcriptomica_filtr <- read.csv("~/Desktop/Pre-processament/processed_data.csv")
@@ -205,7 +205,7 @@ tail(res2) #top downregulated
 
 ```
 
-A partir de les llistes de gens diferencialment expressats (tant per teixit com per genotip), creem 2 subsets de les dades ja pre-processades:
+A partir de les llistes de gens diferencialment expressats (tant per teixit com per genotip), es creen 2 subsets de les dades ja pre-processades:
 
 ```{r}
 row.names(Transcriptomica_filtr) <- Transcriptomica_filtr$User_ID
@@ -220,7 +220,7 @@ diff_expr_genes <- rownames(subset(res2, padj < FDR & abs(log2FoldChange) > log2
 DEG_LUKvsNOT <- Transcriptomica_filtr[diff_expr_genes, ]
 ```
 
-Estandaritzem els noms de les mostres:
+S'estandaritzen els noms de les mostres:
 
 ```{r}
 # Standarize sample names
@@ -237,7 +237,7 @@ colnames(DEG_LUKvsNOT) <- make.unique(gsub(".*(LUK|NOT).*(AR|PA).*(C|S).*", "\\1
 colnames(DEG_LUKvsNOT)
 ```
 
-Exportem els resultat en arxius de text:
+I finalment s'exporten els resultat en arxius de text:
 
 ```{r}
 write.table(DEG_PAvsAR, "/Volumes/ftp/Paula Sole/processed_data/DEG_PAvsAR.txt", sep="\t")
@@ -263,7 +263,7 @@ write.table(transcriptomics_Not, "/Volumes/ftp/Paula Sole/processed_data/transcr
 
 # Metabolòmica
 
-Modifiquem els dataframes per adaptar-los a les nostres necessitats:
+Primerament, es modifiquen els dataframes per adaptar-los a les necessitats de l'anàlisi:
 
 ```{r}
 head(metabolites_AR)
@@ -321,7 +321,7 @@ colnames(metabolites_PA) <- make.unique(gsub(".*(LUK|not).*(C|S).*", "\\1_\\2_PA
 rownames(metabolites_PA)
 ```
 
-Separem els datasets per Lukullum i notabilis
+Es separen els datasets per Lukullus i notabilis
 
 ```{r}
 # Create the "Lukullus" dataset by selecting columns with "LUK" in their names
@@ -351,7 +351,7 @@ names(metabolites_PA_Not)
 
 ## Filtratge dels metabòlits significatius
 
-Eliminem les variables no significatives (p-valor \> 0,05)
+S'eliminen les variables no significatives (p-valor \> 0,05)
 
 ```{r}
 dim(metabolites_AR_Luk)
@@ -393,17 +393,17 @@ dim(metabolites_PA_Not_filtr)
 
 ## Selecció de rèpliques
 
-Com que de cada mostra (LUKCT, LUKST, notCT i notST) tenim 4 rèpliques però de transcriptòmica en tenim 3, realitzem una anàlisi de dispersió per seleccionar les 3 rèpliques que s'assemblin més i eliminar les que es desvien més de la mitjana.
+Atès que es disposa de 4 rèpliques metabolòmiques de  cada mostra (LUKCT, LUKST, notCT i notST) però només 3 rèpliques transcriptòmica, es realitza una anàlisi de dispersió per seleccionar les 3 rèpliques que s'assemblin més i eliminar les que es desvien més de la mitjana.
 
 Per fer-ho:
 
-1.  Calculem la mitjana de cada mostra.
+1.  Es calcula la mitjana de cada mostra.
 
-2.  Calculem la Desviació Absoluta de cada valor respecte a la mitjana (ens donarà una mesura de com de lluny està cada valor de la mitjana)
+2.  Es calcula la Desviació Absoluta de cada valor respecte a la mitjana (dona una mesura de com de lluny està cada valor de la mitjana)
 
-3.  Ordenem els valors per desviació absoluta de menor a major.
+3.  S'ordenen els valors per desviació absoluta de menor a major.
 
-4.  Seleccionem les 3 columnes amb menor desviació.
+4.  Es seleccionen les 3 columnes amb menor desviació.
 
 ```{r}
 # Create a function to select the 2 columns with less desviation
@@ -462,7 +462,7 @@ met_AR_Luk_final <- mutate_all(met_AR_Luk_final, function(x) as.numeric(as.chara
 met_AR_Not_final <- mutate_all(met_AR_Not_final, function(x) as.numeric(as.character(x)))
 ```
 
-Exportem els resultat en arxius de text:
+S'exporten els resultat en arxius de text:
 
 ```{r}
 # Transpose the metabolomics datadrames and delete the first 2 rows
@@ -526,7 +526,7 @@ write.table(met_NOT, "/Volumes/ftp/Paula Sole/processed_data/metabolites_NOT.txt
 
 # Dades fisiològiques
 
-Adaptem el dataframe per poder treballar amb ell de manera adequada:
+S'adapta el dataframe per poder treballar amb ell de manera adequada:
 
 ```{r}
 # Convert the tibble to a data frame
@@ -544,7 +544,7 @@ row.names(physiological) <- make.unique(gsub(".*(LUK|NOT).*(C|S).*", "\\1_\\2_PA
 rownames(physiological)
 ```
 
-Creem un dataset separat per a cada genotip: un amb les dades de Lukullus i un amb les dades de Notabilis:
+Es crea un dataset separat per a cada genotip: un amb les dades de Lukullus i un amb les dades de Notabilis:
 
 ```{r}
 # Create the "Lukullus" dataset by selecting columns with "LUK" in their names
@@ -560,7 +560,7 @@ rownames(physiological_LUK)
 rownames(physiological_NOT) 
 ```
 
-Exportem els resultat en arxius de text:
+S'exporten els resultat en arxius de text:
 
 ```{r}
 write.table(physiological_LUK, "/Volumes/ftp/Paula Sole/processed_data/physiological_LUK.txt", sep="\t")
@@ -571,7 +571,7 @@ write.table(physiological_NOT, "/Volumes/ftp/Paula Sole/processed_data/physiolog
 
 # Conjunts de dades per grups
 
-Creem un dataframe que contingui les dades de PA tant de Lukullus com Notabillis i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files. Seguim el mateix procediment per la resta de grups, de manera que obtenim 2 dataframes per teixit (PA i AR) i 2 dataframes per genotip (Lukullus i notabilis).
+Finalment, es crea un dataframe que contingui les dades de PA tant de Lukullus com Notabillis i dels 3 tipus d'anàlisis. Les variables en columnes i les mostres en files. Es segueix el mateix procediment per la resta de grups, per tal d'obtindre 2 dataframes per teixit (PA i AR) i 2 dataframes per genotip (Lukullus i notabilis).
 
 ```{r}
 PA_dataframe <- cbind(physiological, transcriptomics_PA, met_PA)
@@ -593,7 +593,7 @@ write.table(Not_dataframe, "/Volumes/ftp/Paula Sole/processed_data/Not_dataframe
 
 # Normalització de les dades
 
-Visualitzem la distribució de les dades entre les diferents mostres mitjançant boxplots:
+Es visualitza la distribució de les dades entre les diferents mostres mitjançant boxplots:
 
 ```{r}
 plot_boxplot <- function(data, title) {
@@ -618,7 +618,7 @@ plot_boxplot(t(Not_dataframe), "Boxplot - Not data")
 
 ```
 
-Implementem diferents mètodes i realitzem boxplots per veure com es distribueixen les dades normalitzades.
+S'implementen diferents mètodes i es realitzen boxplots per veure com es distribueixen les dades normalitzades.
 
 ```{r}
 # Min-Max Scaling
@@ -648,7 +648,7 @@ summary(t(PA_log))
 summary(t(PA_quantile))
 ```
 
-Seguim els mateixos passos de normalització per les dades de AR.
+Es segueixen els mateixos passos de normalització per les dades de AR.
 
 ```{r}
 # Min-Max Scaling
@@ -679,7 +679,7 @@ summary(t(AR_log))
 summary(t(AR_quantile))
 ```
 
-Guardem les dades normalitzades:
+Es guarden les dades normalitzades:
 
 ```{r}
 write.table(PA_log, "/Volumes/ftp/Paula Sole/processed_data/PA_dataframe_log.txt", sep="\t")
