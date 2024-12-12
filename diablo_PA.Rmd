@@ -1,0 +1,346 @@
+---
+title: "DIABLO"
+author: "Paula Solé Vallés"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mixOmics)
+library(readxl)
+library(igraph)
+library(gridExtra)
+```
+
+Carreguem el paquet de MixOmics i les dades. Les dades d'entrada es configuren com una llista de Q matrius X1, ..., Xq (on Q és el nombre de blocs òmics) i un factor Y que indica la pertinença a la classe de cada mostra. Cada dataframe de X s'ha de nomenar, ja que coincidirem amb aquests noms amb el paràmetre keepX per al mètode.
+
+```{r}
+# Set working directory
+setwd('/Volumes/ftp/Paula Sole/processed_data')
+# setwd('//150.128.81.153/ftp/Paula Sole/processed_data')
+
+# Load data from an archive
+data <- read.table("PA_dataframe_log.txt", header=TRUE, sep="\t", row.names=1)
+
+# Create the Y factor from de rownames
+groups <- gsub(".*(LUK|NOT)_(AR|PA)_(C|S).*", "\\1_\\2_\\3", gsub("\\.\\d+$", "", rownames(data)))
+Y <- as.factor(groups)
+summary(Y)
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(data)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+data <- data[, -index_columns_NA]
+
+# Subset data to create the different blocks
+physiological <- data[, (1:3)]
+transcriptomics <- data[, grepl("SOLYC", colnames(data))] # genes are labeled as Solyc...
+metabolomics <- data[, grepl("met", colnames(data))] # metabolites are labeled as met...
+
+# Delete variables with 0 variance
+physiological <- physiological[, apply(physiological, 2, var) > 0, drop=FALSE]
+transcriptomics <- transcriptomics[, apply(transcriptomics, 2, var) > 0, drop=FALSE]
+metabolomics <- metabolomics[, apply(metabolomics, 2, var) > 0, drop=FALSE]
+
+# Create a list with the 3 blocks
+X = list(physiological = physiological,
+         transcriptomics = transcriptomics, 
+         metabolomics = metabolomics)
+
+# Comprovem la dimensió de les dades
+lapply(X, dim)
+
+```
+
+## Matriu de disseny
+
+Examinem les dades en un context no integrador: analitzem la correlació entre les 3 primeres variables de cada dataframe per parelles.
+
+```{r}
+# select arbitrary values of features to keep
+list.keepX = c(3, 3) 
+list.keepY = c(3, 3)
+
+# generate three pairwise PLS models
+pls1 <- spls(X[["physiological"]], X[["transcriptomics"]], 
+             keepX = list.keepX, keepY = list.keepY) 
+pls2 <- spls(X[["physiological"]], X[["metabolomics"]], 
+             keepX = list.keepX, keepY = list.keepY)
+# larger keepX as transcriptomics and metabolomics dataframes have more features
+pls3 <- spls(X[["transcriptomics"]], X[["metabolomics"]], 
+             keepX = c(20,20), keepY = list.keepY) 
+
+# plot features of first PLS
+plotVar(pls1, cutoff = 0.5, title = "(a) physiological vs transcriptomics", 
+        legend = c("physiological", "transcriptomics"), 
+        var.names = FALSE, style = 'graphics', 
+        pch = c(16, 17), cex = c(2,2), 
+        col = c('darkorchid', 'lightgreen'))
+
+# plot features of second PLS
+plotVar(pls2, cutoff = 0.5, title = "(b) physiological vs metabolomics", 
+        legend = c("physiological", "metabolomics"), 
+        var.names = FALSE, style = 'graphics', 
+        pch = c(16, 17), cex = c(2,2), 
+        col = c('darkorchid', 'cadetblue2'))
+
+# plot features of third PLS
+plotVar(pls3, cutoff = 0.5, title = "(c) transcritomics vs metabolomics", 
+        legend = c("transcritomics", "metabolomics"), 
+        var.names = FALSE, style = 'graphics', 
+        pch = c(16, 17), cex = c(2,2), 
+        col = c('lightgreen', 'cadetblue2'))
+
+
+# calculate correlation of physiological and transcriptomics data
+print("correlation of physiological and transcriptomics data")
+cor(pls1$variates$X, pls1$variates$Y) 
+
+# calculate correlation of physiological and metabolomics data
+print("correlation of physiological and metabolomics data")
+cor(pls2$variates$X, pls2$variates$Y) 
+
+# calculate correlation of transcriptomics and metabolomics data
+print("correlation of transcriptomics and metabolomics data")
+cor(pls3$variates$X, pls3$variates$Y) 
+```
+
+Calculem també les correlacions entre la primera component de cada dataframe per als tres models PLS.
+
+```{r}
+pls1 <- pls(X$physiological, X$transcriptomics, ncomp = 1)
+print("correlation of physiological and transcriptomics data")
+cor(pls1$variates$X, pls1$variates$Y)
+
+pls2 <- pls(X$physiological, X$metabolomics, ncomp = 1)
+print("correlation of physiological and metabolomics data")
+cor(pls2$variates$X, pls2$variates$Y)
+
+pls3 <- pls(X$transcriptomics, X$metabolomics, ncomp = 1)
+print("correlation of transcriptomics and metabolomics data")
+cor(pls3$variates$X, pls3$variates$Y)
+```
+
+```{r}
+design = matrix(0.8, ncol = length(X), nrow = length(X), 
+                dimnames = list(names(X), names(X)))
+diag(design) = 0
+design 
+
+```
+
+## Ajust del nombre de components
+
+Amb un disseny establert, es pot generar el model DIABLO inicial. S'utilitzarà un nombre arbitràriament elevat de components (en aquest cas, el màxim que podem utilitzar és ncomp = 3, ja que són les rèpliques de cada grup que tenim).
+
+```{r}
+# form basic DIABLO model
+basic.diablo.model = block.splsda(X, Y, ncomp = 3, design = design, near.zero.var = TRUE) 
+```
+
+Per triar el nombre de components per al model DIABLO final, la funció perf() s'executa amb el mètode de validació "loo".
+
+La validació creuada M-fold o LOO es realitza amb un submostreig estratificat on totes les classes estan representades a cada plec. La funció genera el nombre òptim de components que aconsegueixen el millor rendiment en funció de la taxa d'error global o BER. La funció realitza proves t unilaterals per avaluar si hi ha un guany en el rendiment en afegir un component al model. En la majoria dels casos, el nombre òptim de components és el nombre de categories a Y - 1, però val la pena ajustar uns quants components addicionals per comprovar-ho.
+
+```{r}
+# run component number tuning 
+perf.diablo <- perf(basic.diablo.model, validation = "loo") 
+# plot output of tuning
+plot(perf.diablo) 
+#Lists the different types of error rates
+perf.diablo$error.rate
+```
+
+## Ajust del nombre de paràmetres
+
+Utilitzem la funció `tune.block.splsda` per ajustar els paràmetres keepX a la funció block.splsda().
+
+Escollim el nombre òptim de variables per seleccionar en cada conjunt de dades, per a una graella de valors keepX per a cada tipus d'òmics. Tingueu en compte que la funció s'ha configurat per afavorir una signatura relativament petita alhora que ens permet obtenir un nombre suficient de variables per a la validació i/o interpretació posterior. Vegeu ?tune.block.splsda.
+
+La sintonia de la funció s'executa amb una validació creuada de 10 vegades, però només es repeteix una vegada. Tingueu en compte que per a un procés d'ajustament més exhaustiu, sempre que el temps de càlcul sigui suficient, podríem augmentar l'argument nrepeat. Aquí hem desat els resultats en un objecte RData que està disponible per a la seva descàrrega, ja que l'ajustament pot trigar molt de temps, especialment en màquines de gamma baixa.
+
+```{r warning=FALSE}
+# set ncomp variable
+ncomp <- 2
+
+# set grid of values for each component to test
+test.keepX = list(physiological = c(1, 2, 3),
+                  transcriptomics = c(5:9, seq(100,1000, 50)),
+                  metabolomics = seq(5, 30, 5))
+
+library(BiocParallel)
+BPPARAM <- MulticoreParam(workers = 4)  
+
+# run the feature selection tuning
+tune = tune.block.splsda(X, Y, ncomp = ncomp, 
+                         test.keepX = test.keepX, design = design,
+                         validation = 'Mfold', folds= 3, nrepeat = 30,
+                         dist = "centroids.dist")
+
+# set the optimal values of features to retain
+list.keepX = tune$choice.keepX 
+list.keepX
+```
+
+<https://mixomics-users.discourse.group/t/reducing-number-of-features-diablo/1163>
+
+## Model final
+
+```{r}
+final.diablo.model = block.splsda(X, Y, ncomp = ncomp, 
+                                  keepX = list.keepX, design = design)
+
+final.diablo.model$design # design matrix for the final model
+```
+
+## Gràfics
+
+### Sample plots
+
+#### plotDiablo()
+
+Gràfica de diagnòstic per comprovar si la correlació entre components de cada conjunt de dades s'ha maximitzat tal com s'especifica a la matriu de disseny. Especifiquem quina dimensió s'ha d'avaluar amb l'argument ncomp.
+
+```{r}
+plotDiablo(final.diablo.model, ncomp = 1)
+```
+
+Les primeres components de cada conjunt de dades estan altament correlacionats entre si (indicat pels nombres grans a la part inferior esquerra). Els colors i les el·lipses relacionades amb els subtipus de mostra indiquen el poder discriminatiu de cada component per separar els diferents grups.
+
+#### plotIndiv()
+
+La funció projecta cada mostra a l'espai que abasten els components de cada bloc. Amb aquesta gràfica es pot avaluar millor l'agrupació de les mostres.
+
+```{r}
+
+plotIndiv(final.diablo.model, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO Sample Plots')
+```
+
+#### plotArrow()
+
+l'inici de la fletxa indica el baricentre entre tots els conjunts de dades d'una mostra determinada i les puntes de les fletxes indiquen la ubicació d'aquesta mostra a cada bloc. Aquests gràfics posen de manifest l'acord entre tots els conjunts de dades a nivell de mostra.
+
+```{r}
+plotArrow(final.diablo.model, ind.names = FALSE, legend = TRUE, 
+          title = 'DIABLO')
+```
+
+### Variable plots
+
+```{r}
+plotVar(final.diablo.model, var.names = FALSE, 
+        style = 'graphics', legend = TRUE,
+        pch = c(16, 17, 15), cex = c(2,2,2), 
+        col = c('darkorchid', 'lightgreen', 'cadetblue2'))
+```
+
+#### circosPlot()
+
+És exclusiu dels marcs integradors i representa les correlacions entre variables de diferents tipus, representades en els quadrants laterals.
+
+```{r}
+circosPlot(final.diablo.model, cutoff = 0.8, line = TRUE,
+           color.blocks= c('darkorchid', 'lightgreen', 'cadetblue2'),
+           color.cor = c("chocolate3","grey20"), size.labels = 1.5)
+
+
+```
+
+#### networks
+
+Una altra visualització de les correlacions entre els diferents tipus de variables és la xarxa de rellevància, que també es construeix a partir de la matriu de semblança (com el circosPlot). Cada color representa un tipus de variable.
+
+```{r}
+#png(file="~/Desktop/diablo.png", width=600, height=200)
+#quartz(width=10, height=10)
+
+network(final.diablo.model, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'lightgreen', 'cadetblue2'), cutoff = 1,
+        save = 'jpeg', name.save = 'network_PA')
+
+
+#dev.off()
+
+```
+
+```{r}
+setwd('~/Desktop')
+my.network = network(final.diablo.model, blocks = c(1,2,3),
+        color.node = c('darkorchid', 'lightgreen', 'cadetblue2'), cutoff = 0.95,
+        save = 'jpeg', name.save = 'network_PA')
+write.graph(my.network$gR, file = "network_PA_0.95.gml", format = "gml")
+```
+
+#### plotLoadings()
+
+visualitza els pesos de càrrega de cada variable seleccionada en cada component i cada conjunt de dades. El color indica la classe en què la variable té el nivell màxim d'expressió (contrib = 'max') utilitzant la mediana (mètode = 'mediana').
+
+```{r}
+plotLoadings(final.diablo.model, block = 'transcriptomics', comp = 2, contrib = 'max', method = 'median', title = 'transcriptomics block')
+plotLoadings(final.diablo.model, block = 'metabolomics', comp = 2, contrib = 'max', method = 'median', title = 'metabolomics block')
+plotLoadings(final.diablo.model, block = 'physiological', comp = 1, contrib = 'max', method = 'median', title = 'physiological block')
+
+```
+
+#### cimDIABLO()
+
+és un mapa d'imatge agrupat implementat específicament per representar l'expressió de signatura molecular multiòmica per a cada mostra.
+
+```{r}
+#png(file="~/Desktop/diablo.png", width=600, height=200)
+#quartz(width=10, height=10)
+
+cimDiablo(final.diablo.model)
+
+#dev.off()
+```
+
+## Performance del model
+
+```{r}
+auc.splsda = auroc(final.diablo.model, roc.block = "metabolomics", 
+                   roc.comp = 2, print = FALSE)
+
+auc.splsda = auroc(final.diablo.model, roc.block = "transcriptomics", 
+                   roc.comp = 2, print = FALSE)
+
+auc.splsda = auroc(final.diablo.model, roc.block = "physiological", 
+                   roc.comp = 2, print = FALSE)
+```
+
+## Extracció de les variables seleccionades
+
+```{r}
+setwd('/Volumes/ftp/Paula Sole')
+
+metabolites_annotation <- read_excel("Summary_metabolites_hormones_2019_luk&not_PA.xlsx",sheet = "annotation")
+
+genes_annotation <- read.table("ITAG4.0_descriptions.txt", sep="\t", quote = "")
+colnames(genes_annotation) <- c("ID", "Annotation")
+genes_annotation[,1] <- toupper(genes_annotation[,1])
+```
+
+```{r}
+physiological_selected <- selectVar(final.diablo.model, block = 'physiological', comp = 1)$physiological$name 
+physiological_selected_comp2 <- selectVar(final.diablo.model, block = 'physiological', comp = 2)$physiological$name 
+physiological_selected <- c(physiological_selected_comp1, physiological_selected_comp2)
+print("Physiological parameters selected by DIABLO in PA")
+print(physiological_selected)
+
+genes_selected_comp1 <- selectVar(final.diablo.model, block = 'transcriptomics', comp = 1)$transcriptomics$name 
+genes_selected_comp2 <- selectVar(final.diablo.model, block = 'transcriptomics', comp = 2)$transcriptomics$name 
+genes_selected <- c(genes_selected_comp1, genes_selected_comp2)
+genes_selected <- genes_annotation[genes_annotation$ID %in% genes_selected, "Annotation"]
+print("Genes selected by DIABLO in PA")
+print(genes_selected)
+
+metabolites_selected_comp1 <- selectVar(final.diablo.model, block = 'metabolomics', comp = 1)$metabolomics$name 
+metabolites_selected_comp2 <- selectVar(final.diablo.model, block = 'metabolomics', comp = 2)$metabolomics$name 
+metabolites_selected <- c(metabolites_selected_comp1, metabolites_selected_comp2)
+metabolites_selected <- metabolites_annotation[metabolites_annotation$ID %in% metabolites_selected, "Annotation"]
+print("Metabolites selected by DIABLO in PA")
+print(as.list(metabolites_selected))
+```
