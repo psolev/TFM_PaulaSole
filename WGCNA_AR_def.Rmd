@@ -1,0 +1,622 @@
+---
+title: "WGCNA"
+author: "Paula Solé Vallés"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '~/Desktop/WGCNA/AR')
+
+# Necessary packages
+library(WGCNA)
+library(openxlsx)
+library(readxl)
+library(GEOquery)
+library(tidyverse)
+library(gridExtra)
+library(flashClust)
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+library(cowplot)
+library(GO.db)
+```
+
+Es defineix el directori de treball i amb "stringsAsFactors = FALSE" canviem la opció que per defecte converteix strings (cadenes de caràcters) en factors quan es creen dataframes directament amb data.frame() o com a resultat de l'ús de read.table() per llegir dades tabulars.
+
+```{r}
+# The following setting is important, do not omit.
+options(stringsAsFactors = FALSE);
+```
+
+# Preparació de les dades
+
+El nostre conjunt de dades originals té les mostres en files i les variables en columnes, però algunes funcions WGCNA esperen variables en files i mostres en columnes, per tant creem un variable amb les dades transposades.
+
+```{r}
+# Load data from an archive
+Data <- read.table("/Volumes/ftp/Paula Sole/processed_data/AR_dataframe_log.txt", header=TRUE, sep="\t", row.names=1)
+
+# Take a quick look at what is in the data set:
+dim(Data)
+
+# Delete columns with NA
+columns_NA <- colSums(is.na(Data)) > 0
+index_columns_NA <- which(columns_NA)
+print(index_columns_NA)
+Data <- Data[, -index_columns_NA]
+
+# Transpose the data (samples in rows, variables in columns)
+tData <- t(Data)
+```
+
+Carreguem també les dades fenotípiques, que corresponen a nivell de diferents hormones:
+
+```{r}
+# upload trait data
+datTraits <- read_excel("/Volumes/ftp/Paula Sole/Summary_metabolites_hormones_2019_luk&not_AR.xlsx", sheet = "hormones")
+dim(datTraits)
+head(datTraits)
+
+# Transpose the data
+datTraits <- t(datTraits)
+datTraits <- as.data.frame(datTraits)
+
+# Change column names
+colnames(datTraits) <- datTraits[1,] # Set column names
+datTraits <- datTraits[-1,] # Remove the first row as it’s now used as column names
+
+# Change row names to match Data
+rownames(datTraits) <- rownames(Data)
+
+# Checking Row Name Consistency
+table(rownames(datTraits)==rownames(Data))
+
+# Convert to numeric
+datTraits[] <- lapply(datTraits, as.numeric)
+```
+
+## Control de qualitat: detecció d'outliers
+
+Comprovem la qualitat de les dades: mostres o gens amb Missing Values excessius. Si l'última declaració retorna TRUE, tots els gens han passat el criteri. Si no, eliminem els gens i les mostres que no l'han passat:
+
+```{r}
+# list of samples and genes that pass criteria on maximum number of missing or low weight values
+gsg = goodSamplesGenes(Data, verbose = 3);
+gsg$allOK
+table(gsg$goodGenes)
+table(gsg$goodSamples)
+
+# remove genes that are detectd as outliers
+Data <- Data[gsg$goodSamples, gsg$goodGenes]
+```
+
+### Cluster de jerarquies
+
+A continuació, agrupem les mostres en clusters per veure si hi ha cap valor atípic evident (*outlier*). Escollim un tall que eliminarà les mostres *outlier*.
+
+```{r}
+# Calculate sample distance and cluster the samples
+sampleTree = hclust(dist(Data), method = "average")
+
+# plot sample tree
+pdf(file = "1-n-sampleClustering_AR.pdf", width = 12, height = 9)
+# Graphical parameters
+par(cex = 1.6)
+par(mar = c(0,4,2,0))
+# Graphical representation as a dendogram
+plot(sampleTree, 
+     main = "Sample clustering to detect outliers", 
+     sub="", 
+     xlab="",
+     cex.lab = 1.5,
+     cex.axis = 1.5, 
+     cex.main = 2)
+# Plot a line to show the cut
+abline(h = 30, col = "red")
+
+dev.off()
+```
+
+### Construcció d'una xarxa de mostra per a la detecció d'outliers.
+
+Aquest pas calcula una matriu que representa la força de les connexions (adjacències) entre mostres en funció de les seves distàncies d'expressió gènica. La connectivitat estandarditzada (Z.k) s'utilitza per identificar els valors atípics.
+
+`Adjacency` calcula l'adjacència de la xarxa (correlació o distància) a partir de dades d'expressió donades o a partir d'una semblança.
+
+```{r}
+# sample network based on squared Euclidean distance 
+A = adjacency(tData, type = "distance") 
+# this calculates the whole network connectivity
+k = as.numeric(apply(A, 2, sum))-1
+# standardized connectivity
+Z.k = scale(k)
+
+# Designate samples as outlying if their Z.k value is below the threshold (often -2.5)
+thresholdZ.k = -2.5 
+# the color vector indicates outlyingness (red) 
+outlierColor = ifelse(Z.k < thresholdZ.k, "red", "black") 
+print(table(outlierColor))
+
+# calculate the cluster tree using flahsClust 
+sampleTree = flashClust(as.dist(1 - A), method = "average")
+
+# Convert traits to a color representation: where red indicates high values 
+traitColors <- data.frame(numbers2colors(as.matrix(datTraits), signed = FALSE))
+dimnames(traitColors)[[2]] = paste(names(datTraits), "C", sep = "")
+datColors = data.frame(outlierC = outlierColor, traitColors) 
+
+# Plot the sample dendrogram and the colors underneath.
+pdf(file = "1-n-sampleClustering_withTraits_AR.pdf", width = 12, height = 9);
+par(cex = 1.6);
+par(mar = c(0,4,2,0))
+plotDendroAndColors(sampleTree, 
+                    groupLabels = names(datColors), 
+                    colors = datColors, 
+                    main = "Sample dendrogram and trait heatmap")
+dev.off()
+```
+
+# Contrucció de la xarxa i detecció dels mòduls
+
+## Selecció de *soft-thresholding powers*
+
+Per construir la xarxa de gens ponderats cal escollir el poder de llindar suau (*soft thresholding power*) β al qual s'eleva la similitud de coexpressió per calcular l'adjacència. Utilitzem la funció `pickSoftThreshold` que realitza l'anàlisi de la topologia de la xarxa i ajuda a triar el threshold adequat. Per això, escollim un conjunt de `powers` candidats i la funció retorna un conjunt d'índexs de xarxa que s'han d'inspeccionar.
+
+-   El primer gràfic mostra com de propera està la topologia de xarxa a l'escala lliure per a cada power. L'objectiu és seleccionar el més baix que compleixi que R^2^≥0,9
+
+-   El segon gràfic mostra la connectivitat mitjana dels diferents powers. L'objectiu és escollir una potència que equilibri la independència a gran escala i la connectivitat raonable.
+
+```{r}
+# Choose a set of soft-thresholding powers
+powers = c(c(1:20), seq(from = 22, to=30, by=2))
+
+# Call the network topology analysis function
+sft = pickSoftThreshold(Data, powerVector = powers, verbose = 5)
+
+# Plot the results:
+pdf(file = "2-n-sft_AR.pdf", width = 15, height = 5);
+par(mfrow = c(1,2));
+cex1 = 0.9;
+
+# Scale-free topology fit index as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], 
+     -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     xlab="Soft Threshold (power)",
+     ylab="Scale Free Topology Model Fit,signed R^2",
+     type="n",
+     main = paste("Scale independence"))
+text(sft$fitIndices[,1], 
+     -sign(sft$fitIndices[,3])*sft$fitIndices[,2],
+     labels=powers,
+     cex=cex1,
+     col="red");
+
+# Add line to use as a R^2 cut-off
+abline(h=0.90,col="red")
+
+# Mean connectivity as a function of the soft-thresholding power
+plot(sft$fitIndices[,1], 
+     sft$fitIndices[,5],
+     xlab="Soft Threshold (power)",
+     ylab="Mean Connectivity", 
+     type="n", 
+     main = paste("Mean connectivity"))
+text(sft$fitIndices[,1], 
+     sft$fitIndices[,5], 
+     labels=powers, 
+     cex=cex1,
+     col="red")
+
+dev.off()
+```
+
+Escollim el *Soft Threshold* β en funció del criteri de topologia sense escala, és a dir, escollim la β més baixa que resulta en una topologia aproximada sense escala mesurada per l'índex d'ajust de la topologia sense escala.
+
+## Automatic Module Detection Via Dynamic Tree Cutting
+
+La funció `blockwiseModules` identifica mòduls de coexpressió (agrupaments de gens amb patrons d'expressió similars). Implementa automàticament tots els passos de detecció de mòduls: construeix automàticament una xarxa de correlació, crea un arbre de clúster, defineix mòduls com a branques i fusiona mòduls tancats.
+
+-   `corType` = "pearson": utilitza la correlació de Pearson.
+
+-   `networkType` = "signed hybrid": crea una xarxa on les connexions conserven el signe de correlació.
+
+-   `power` = potència per al càlcul de l'adjacència (del pas anterior).
+
+-   `mergeCutHeight` = 0,25: Llindar per combinar mòduls similars (valors més baixos = menys mòduls combinats).
+
+-   `minModuleSize` = 50: nombre mínim de gens en un mòdul.
+
+-   `saveTOMs` = TRUE: desa la matriu de superposició topològica (TOM) per a la seva reutilització.
+
+Emet colors de mòduls i eigenes de mòduls que es poden utilitzar en anàlisis posteriors. També es poden visualitzar els resultats de la detecció del mòdul.
+
+```{r}
+temp_cor <- cor       
+cor <- WGCNA::cor
+
+mergingThresh = 0.25 
+
+# Set the chosen power
+power <- sft$powerEstimate
+
+# Variables in columns and samples in rows
+net = blockwiseModules(Data, 
+                       corType = "pearson", 
+                       maxBlockSize = 5000,
+                       networkType = "signed hybrid", 
+                       power = power, 
+                       minModuleSize = 50, 
+                       mergeCutHeight = mergingThresh,
+                       numericLabels = TRUE, 
+                       saveTOMs = TRUE, 
+                       pamRespectsDendro = FALSE, 
+                       saveTOMFileBase = "allTOM")
+
+# Module labels for each gene.
+moduleLabelsAutomatic = net$colors 
+
+# Convert labels to colors for plotting
+moduleColorsAutomatic = labels2colors(moduleLabelsAutomatic)
+
+# A data frame with module eigengenes can be obtained 
+MEsAutomatic = net$MEs 
+```
+
+Associem els trets (en aquest cas, el perfil d'hormones).
+
+Calculem la correlació (`GS.value`) entre variables i un tret específic i després la convertim en colors (`GS.valueColor`).
+
+```{r}
+value = as.data.frame(datTraits) 
+names(value) = "value"
+
+# Next use this trait to define a gene significance variable
+GS.value = as.numeric(cor(Data, value, use = "p")) 
+
+# This translates the numeric values into colors 
+GS.valueColor = numbers2colors(GS.value, signed = T)
+
+blocknumber = 1
+
+datColors = data.frame(moduleColorsAutomatic, GS.valueColor)[net$blockGenes[[blocknumber]], ] 
+```
+
+Representem el dendrograma del gen amb els colors del mòdul i la importància dels trets a sota.
+
+```{r}
+# Plot the dendrogram and the module colors underneath 
+pdf(file = "GeneColors_AR.pdf", width = 20, height = 12);
+
+plotDendroAndColors(net$dendrograms[[blocknumber]], 
+                    colors = datColors, 
+                    groupLabels = c("Module colors", "GS.value"), 
+                    dendroLabels = FALSE, 
+                    hang = 0.03, 
+                    addGuide = TRUE, 
+                    guideHang = 0.05)
+
+dev.off()
+```
+
+## Associar mòduls i fenotips (Module-trait relationships)
+
+Realitzem un heatmap per veure la correlació entre cada mòdul i els trets (nivells d'hormones).
+
+```{r}
+# Choose a module assignment
+moduleColorsSt = moduleColorsAutomatic  
+
+# Define numbers of genes and samples 
+nGenes = ncol(tData) 
+nSamples = nrow(tData)
+
+# Recalculate MEs with color labels 
+MEs0 = moduleEigengenes(Data, moduleColorsSt)$eigengenes
+MEsCE = orderMEs(MEs0)
+modTraitCor = cor(MEsCE, datTraits, use = "p")
+modTraitPvalue = corPvalueStudent(modTraitCor, nSamples)
+
+#Displaying correlations and its p-values
+textMatrix = paste(signif(modTraitCor, 2), "\n(", 
+                   signif(modTraitPvalue, 1), ")",sep = "")
+dim(textMatrix) = dim(modTraitCor)
+par(mar = c(6, 8.5, 3, 3)) 
+
+pdf(file = "Traits_AR.pdf", width = 20, height = 12);
+
+# Display the correlation values within a heatmap plot
+labeledHeatmap(Matrix = modTraitCor, 
+               xLabels = names(datTraits), 
+               yLabels = names(MEsCE),      
+               ySymbols = names(MEsCE), 
+               colorLabels = FALSE, 
+               colors = blueWhiteRed(50),      
+               textMatrix = textMatrix, 
+               setStdMargins = TRUE, 
+               cex.text = 0.8, 
+               zlim = c(-1,1), 
+               main = paste("Module-trait relationships"))
+
+dev.off()
+
+cor <- temp_cor
+```
+
+Desem els resultats:
+
+```{r}
+# calculate the module membership values (module eigengene based connectivity kME):
+datKME = signedKME(Data, MEsCE)
+
+# Read in the probe annotation
+GeneAnnotation <- read.csv("/Volumes/ftp/Paula Sole/ITAG4.0_descriptions.txt", 
+                           header = FALSE, 
+                           sep = "\t")
+GeneAnnotation[,1] <- toupper(GeneAnnotation[,1])
+
+# Match probes in the data set to those of the annotation file
+probes = toupper(colnames(Data))
+probes2annot = match(probes, GeneAnnotation$V1)
+
+# data frame with gene significances (cor with the traits)
+datGS.Traits = data.frame(cor(Data, datTraits, use = "p")) 
+names(datGS.Traits) = paste("cor", names(datGS.Traits), sep = ".") 
+
+# data frame with gene significances (cor with the traits)
+datOutput = data.frame(Probes = colnames(Data), moduleColorsSt, datKME, datGS.Traits)
+
+# save the results in a comma delimited file
+write.table(datOutput, "ResultsNew_AR.csv", row.names = F, sep = ",")
+write.csv(modTraitCor, file = "Traitscor_AR.csv")
+write.csv(modTraitPvalue, file = "Traitspvalue_AR.csv")
+```
+
+## Exportar a Cytoscape
+
+A partir del heatmap de correlació entre mòduls i nivells hormonals, escollim els mòduls més significatius i els exportem per visualitzar la xarxa a Cytoscape.
+
+```{r}
+# Recalculate topological overlap 
+TOM = TOMsimilarityFromExpr(Data, power=power) 
+table(moduleColorsSt)
+```
+
+Exportem el mòduls amb més correlació per visualitzar-los en forma de xarxa amb Cytoscape
+
+```{r}
+module = "blue"
+
+# Select module probes 
+inModule = is.finite(match(moduleColorsSt,module))
+modProbes = probes[inModule]
+
+# Generate altNodeNames
+modGenes <- GeneAnnotation$V2[probes2annot[inModule]]
+modGenes[is.na(modGenes)] <- "Unknown" # Replace NA with "Unknown"
+
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule] 
+dimnames(modTOM) = list(modProbes, modProbes)
+
+# Export the network into edge and node list files for Cytoscape
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile=paste("AR_CytoEdge",paste(module,collapse="-"),".txt",sep=""), 
+                               nodeFile=paste("AR_CytoNode",paste(module,collapse="-"),".txt",sep=""), 
+                               weighted = TRUE, 
+                               threshold = 0.8,
+                               nodeNames=modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColorsSt[inModule])
+```
+
+```{r}
+module = "brown"
+
+# Select module probes 
+inModule = is.finite(match(moduleColorsSt,module))
+modProbes = probes[inModule]
+
+# Generate altNodeNames
+modGenes <- GeneAnnotation$V2[probes2annot[inModule]]
+modGenes[is.na(modGenes)] <- "Unknown" # Replace NA with "Unknown"
+
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule] 
+dimnames(modTOM) = list(modProbes, modProbes)
+
+# Export the network into edge and node list files for Cytoscape
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile=paste("AR_CytoEdge",paste(module,collapse="-"),".txt",sep=""), 
+                               nodeFile=paste("AR_CytoNode",paste(module,collapse="-"),".txt",sep=""), 
+                               weighted = TRUE, 
+                               threshold = 0.8,
+                               nodeNames=modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColorsSt[inModule])
+```
+
+```{r}
+module = "turquoise"
+
+# Select module probes 
+inModule = is.finite(match(moduleColorsSt,module))
+modProbes = probes[inModule]
+
+# Generate altNodeNames
+modGenes <- GeneAnnotation$V2[probes2annot[inModule]]
+modGenes[is.na(modGenes)] <- "Unknown" # Replace NA with "Unknown"
+
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule] 
+dimnames(modTOM) = list(modProbes, modProbes)
+
+# Export the network into edge and node list files for Cytoscape
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile=paste("AR_CytoEdge",paste(module,collapse="-"),".txt",sep=""), 
+                               nodeFile=paste("AR_CytoNode",paste(module,collapse="-"),".txt",sep=""), 
+                               weighted = TRUE, 
+                               threshold = 0.8,
+                               nodeNames=modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColorsSt[inModule])
+```
+
+```{r}
+module = "yellow"
+
+# Select module probes 
+inModule = is.finite(match(moduleColorsSt,module))
+modProbes = probes[inModule]
+
+# Generate altNodeNames
+modGenes <- GeneAnnotation$V2[probes2annot[inModule]]
+modGenes[is.na(modGenes)] <- "Unknown" # Replace NA with "Unknown"
+
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule] 
+dimnames(modTOM) = list(modProbes, modProbes)
+
+# Export the network into edge and node list files for Cytoscape
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile=paste("AR_CytoEdge",paste(module,collapse="-"),".txt",sep=""), 
+                               nodeFile=paste("AR_CytoNode",paste(module,collapse="-"),".txt",sep=""), 
+                               weighted = TRUE, 
+                               threshold = 0.8,
+                               nodeNames=modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColorsSt[inModule])
+```
+
+```{r}
+module = "red"
+
+# Select module probes 
+inModule = is.finite(match(moduleColorsSt,module))
+modProbes = probes[inModule]
+
+# Generate altNodeNames
+modGenes <- GeneAnnotation$V2[probes2annot[inModule]]
+modGenes[is.na(modGenes)] <- "Unknown" # Replace NA with "Unknown"
+
+# Select the corresponding Topological Overlap
+modTOM = TOM[inModule, inModule] 
+dimnames(modTOM) = list(modProbes, modProbes)
+
+# Export the network into edge and node list files for Cytoscape
+cyt = exportNetworkToCytoscape(modTOM,
+                               edgeFile=paste("AR_CytoEdge",paste(module,collapse="-"),".txt",sep=""), 
+                               nodeFile=paste("AR_CytoNode",paste(module,collapse="-"),".txt",sep=""), 
+                               weighted = TRUE, 
+                               threshold = 0.8,
+                               nodeNames=modProbes,
+                               altNodeNames = modGenes,
+                               nodeAttr = moduleColorsSt[inModule])
+```
+
+# Anàlisi d'enriquiment en GO
+
+```{r}
+# Create a list to store gene lists for each module
+modules <- unique(moduleColorsAutomatic)
+gene_lists <- list()
+for (module in modules) {
+  # Subset genes based on the module color
+  gene_lists[[module]] <- colnames(Data)[moduleColorsAutomatic == module]
+}
+```
+
+```{r}
+# Load GO annotations
+GOTERM <- read.table("~/Desktop/GOTERM.txt", header = FALSE, sep = "\t", stringsAsFactors = FALSE)
+GOTERM[, 2] <- toupper(GOTERM[, 2])  # Convert gene IDs to uppercase
+colnames(GOTERM) <- c("GO", "GeneID")
+
+# Replace GO IDs with a list of GO descriptions
+GO_ids <- GOTERM$GO
+GO_descriptions <- AnnotationDbi::select(GO.db, 
+                                         keys = GO_ids, 
+                                         keytype = "GOID", 
+                                         columns = c("GOID", "TERM"))
+head(GO_descriptions)
+
+# Extract all genes (background)
+background_genes <- unique(GOTERM$GeneID)
+
+# Loop through each module for enrichment analysis
+for (module in modules) {
+  # Get genes in the current module
+  modGenes <- names(Data)[moduleColorsSt == module]
+  
+  # Debug: Check if module genes are retrieved
+  print(paste("Processing module:", module, "- Number of genes:", length(modGenes)))
+  
+  # Skip if no genes are found
+  if (length(modGenes) == 0) {
+    message(paste("No genes found for module:", module, "- Skipping"))
+    next
+  }
+  
+  # Perform GO enrichment analysis
+  gse <- enricher(gene = modGenes,
+                  pvalueCutoff = 0.05,
+                  pAdjustMethod = "fdr",
+                  universe = background_genes,
+                  minGSSize = 30,
+                  maxGSSize = 500,
+                  TERM2GENE = GOTERM,
+                  TERM2NAME = GO_descriptions)
+  
+  # Check if enrichment analysis returned results
+  if (is.null(gse) || nrow(gse@result) == 0) {
+    message(paste("No significant enrichment for module:", module, "- Skipping plots"))
+    next
+  }
+  
+  tryCatch({
+  # Plot enrichment results (barplot and dotplot)
+  pdf(file = paste0("GOEnrichment_", module, ".pdf"))
+    
+    print(barplot(gse, showCategory = 20) + 
+          ggtitle(paste("Barplot GO Enrichment for Module:", module)))
+    
+    print(dotplot(gse, showCategory = 20) + 
+          ggtitle(paste("Dotplot GO Enrichment for Module:", module)))
+  
+  dev.off()
+  
+  }, error = function(e) {
+    message(paste("Error while plotting for module:", module, ":", e$message))
+  })
+}
+
+```
+
+```{r}
+# Extract genes for significant GO terms
+# Filter by adjusted p-value
+significant_terms <- gse@result[gse@result$pvalue < 0.05, ]  
+# Split and flatten gene lists
+genes_of_interest <- unique(unlist(strsplit(significant_terms$geneID, "/")))  
+
+# Assuming `TOM` is your Topological Overlap Matrix
+subset_genes <- colnames(Data) %in% genes_of_interest
+filtered_TOM <- TOM[subset_genes, subset_genes]
+filtered_module_colors <- moduleColorsAutomatic[subset_genes]
+
+# Export the filtered network
+exportNetworkToCytoscape(
+  adjMat = filtered_TOM,
+  edgeFile = "CytoscapeEdges.txt",
+  nodeFile = "CytoscapeNodes.txt",
+  weighted = TRUE,
+  threshold = 0.02,  # Adjust threshold for edge inclusion
+  nodeNames = genes_of_interest,
+  altNodeNames = genes_of_interest,
+  nodeAttr = filtered_module_colors
+)
+```
